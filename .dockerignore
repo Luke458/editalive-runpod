@@ -1,0 +1,12 @@
+# Keep the build context tiny; the Dockerfile clones the app repo itself.
+.git
+.github
+build-and-push.sh
+runpod-pod.sh
+.last_pod_id
+.last_template_id
+weights/
+*.safetensors
+**/__pycache__
+**/*.pyc
+*.md

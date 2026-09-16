@@ -1,0 +1,99 @@
+name: Build EditaLive image
+
+# Builds the prebaked RunPod image and pushes it to GHCR.
+#
+# Triggers:
+#   - manual runs (Actions -> Build EditaLive image -> Run workflow)
+#   - pushes touching the Dockerfile or the setup script
+#
+# After the first successful run, make the GHCR package PUBLIC so RunPod can
+# pull it without registry credentials:
+#   GitHub -> your profile -> Packages -> editalive-runpod -> Package settings
+#   -> Change visibility -> Public
+# Otherwise create a RunPod registry credential and pass containerRegistryAuthId.
+
+on:
+  workflow_dispatch:
+    inputs:
+      torch_cuda_arch_list:
+        description: "TORCH_CUDA_ARCH_LIST (e.g. 8.0;8.9;9.0)"
+        required: false
+        default: "8.0;8.9;9.0"
+      bake_weights:
+        description: "Bake ~50 GB of weights into the image (0 or 1)"
+        required: false
+        default: "0"
+      max_jobs:
+        description: "Parallel compile jobs"
+        required: false
+        default: "4"
+  push:
+    branches: [main]
+    paths:
+      - "Dockerfile"
+      - "runpod-setup.sh"
+      - ".github/workflows/build-image.yml"
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: false
+          swap-storage: false
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            TORCH_CUDA_ARCH_LIST=${{ inputs.torch_cuda_arch_list || '8.0;8.9;9.0' }}
+            BAKE_WEIGHTS=${{ inputs.bake_weights || '0' }}
+            MAX_JOBS=${{ inputs.max_jobs || '4' }}
+            CMAKE_BUILD_PARALLEL_LEVEL=${{ inputs.max_jobs || '4' }}
+          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
+          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache,mode=max
+          provenance: false
