@@ -34,9 +34,6 @@ on:
       - "runpod-setup.sh"
       - ".github/workflows/build-image.yml"
 
-env:
-  IMAGE: ghcr.io/${{ github.repository }}
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -48,6 +45,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # GHCR references must be lowercase; github.repository preserves case.
+      - name: Compute image name
+        id: img
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
 
       - name: Free disk space
         uses: jlumbroso/free-disk-space@v1.3.1
@@ -74,7 +76,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.IMAGE }}
+          images: ${{ steps.img.outputs.image }}
           tags: |
             type=ref,event=branch
             type=sha,prefix=sha-
@@ -94,6 +96,6 @@ jobs:
             BAKE_WEIGHTS=${{ inputs.bake_weights || '0' }}
             MAX_JOBS=${{ inputs.max_jobs || '4' }}
             CMAKE_BUILD_PARALLEL_LEVEL=${{ inputs.max_jobs || '4' }}
-          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
-          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache,mode=max
+          cache-from: type=registry,ref=${{ steps.img.outputs.image }}:buildcache
+          cache-to: type=registry,ref=${{ steps.img.outputs.image }}:buildcache,mode=max
           provenance: false
