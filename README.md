@@ -7,16 +7,16 @@ EditaLive's inference stack is **CUDA-only** (FlashAttention + custom CUTLASS ke
 so it cannot run on the AMD/ROCm machine this tooling was written on. Everything here
 targets NVIDIA GPUs on RunPod.
 
-The main problem this repo solves: a fresh pod spends **~40 minutes compiling**
-`flash-attn` and `fastvideo-kernel`, then **downloads ~50 GB** of weights. This repo
-bakes the compiles into an image (so pods are ready in ~1 min) and caches the weights
-on a network volume (so they download only once).
+The main problem this repo solves: a fresh pod spends several minutes compiling
+`flash-attn` and `fastvideo-kernel` and then **downloads ~50 GB** of weights before it
+can run anything. This repo bakes the compiles into an image (so pods are ready in
+~1 min) and caches the weights on a network volume (so they download only once).
 
 ## Contents
 
 | File | Purpose |
 |---|---|
-| `Dockerfile` | Prebuilt image: CUDA 12.8 + torch 2.6.0 + ffmpeg + repo deps + `flash-attn` + `fastvideo-kernel`, verified at build. Adds `editalive-init`. |
+| `Dockerfile` | Prebuilt image: CUDA 12.x + torch 2.6.0 + Python 3.12 + ffmpeg + repo deps + `flash-attn` + `fastvideo-kernel`, verified at build. Adds `editalive-init`. |
 | `build-and-push.sh` | Build and push the image locally (docker/podman; no GPU or local CUDA required). |
 | `runpod-pod.sh` | Create/manage pods and register templates via the RunPod REST API. |
 | `runpod-setup.sh` | On-pod setup (idempotent): clones the repo, installs anything missing, downloads weights, writes ready-to-run scripts. |

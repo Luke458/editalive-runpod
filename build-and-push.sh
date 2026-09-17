@@ -45,7 +45,8 @@ echo "Building ${FULL_IMAGE}"
 echo "  arch list : ${TORCH_CUDA_ARCH_LIST}"
 echo "  max jobs  : ${MAX_JOBS} / ${CMAKE_BUILD_PARALLEL_LEVEL}"
 echo "  weights   : BAKE_WEIGHTS=${BAKE_WEIGHTS}"
-echo "This takes roughly 40-90 min the first time."
+echo "Typically ~10-20 min: flash-attn installs from a prebuilt wheel when one"
+echo "matches this torch/CUDA/Python, while the CUTLASS kernel compiles from source."
 
 "${ENGINE}" build \
   --platform linux/amd64 \

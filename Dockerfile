@@ -4,7 +4,8 @@
 # so a fresh Pod is ready seconds after boot instead of waiting ~40 min for
 # source builds.
 #
-# Base: torch 2.6.0, Python 3.10, CUDA 12.8.1 (matches requirements.txt).
+# Base: torch 2.6.0+cu126, Python 3.12, CUDA 12.x (matches requirements.txt;
+# decord ships a py3-none wheel so 3.12 is fine).
 #
 # Build (no GPU needed on the build host — nvcc comes from the base image):
 #   ./build-and-push.sh
@@ -60,11 +61,32 @@ RUN CMAKE_BUILD_PARALLEL_LEVEL="${CMAKE_BUILD_PARALLEL_LEVEL}" \
 # Optional: bake the ~50 GB of weights into the image (not recommended).
 RUN if [ "${BAKE_WEIGHTS}" = "1" ]; then python tools/download_weights.py; fi
 
-# Fail the build now if either compiled kernel is unusable.
-RUN python -c "import torch, flash_attn, fastvideo_kernel; \
-print('torch', torch.__version__); \
-print('flash-attn', flash_attn.__version__); \
-print('fastvideo_kernel OK')"
+# Verify the installs WITHOUT importing the CUDA/Triton extensions: importing
+# fastvideo_kernel initializes the Triton driver, which needs a GPU and would
+# fail on the build host. find_spec + metadata prove the packages, and the .so
+# glob proves the compiled extensions landed.
+RUN python - <<'PY'
+import importlib.util as u
+import importlib.metadata as md
+from pathlib import Path
+
+for mod in ("torch", "flash_attn", "fastvideo_kernel"):
+    if u.find_spec(mod) is None:
+        raise SystemExit(f"{mod} is not installed")
+
+for dist in ("torch", "flash-attn", "fastvideo-kernel"):
+    try:
+        print(f"{dist}=={md.version(dist)}")
+    except md.PackageNotFoundError:
+        print(f"{dist}: no metadata")
+
+spec = u.find_spec("fastvideo_kernel")
+pkg_dir = Path(next(iter(spec.submodule_search_locations)))
+exts = sorted(p.name for p in pkg_dir.rglob("*.so"))
+if not exts:
+    raise SystemExit("fastvideo_kernel has no compiled extensions")
+print("fastvideo_kernel extensions:", ", ".join(exts))
+PY
 
 # First-boot helper: clone the repo onto the network volume (if absent) and run
 # the idempotent setup (downloads weights once, writes run-streaming.sh).

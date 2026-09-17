@@ -87,7 +87,7 @@ cmd_template() {
       volumeMountPath: "/workspace",
       ports: ["22/tcp", "7860/http"],
       env: { HF_HOME: "/workspace/hf", HF_HUB_ENABLE_HF_TRANSFER: "1" },
-      readme: "EditaLive prebuilt (CUDA 12.8, torch 2.6.0, flash-attn, fastvideo-kernel)."
+      readme: "EditaLive prebuilt (CUDA 12.x, torch 2.6.0, flash-attn, fastvideo-kernel)."
     }')"
 
   local resp; resp="$(api POST /templates "${body}")"

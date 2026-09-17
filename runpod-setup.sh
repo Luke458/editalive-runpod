@@ -6,7 +6,7 @@
 #     cd /workspace && bash runpod-setup.sh
 #
 # Designed for `runpod/pytorch:1.3.1-cu1281-torch260-ubuntu2204`
-# (PyTorch 2.6.0, Python 3.10, CUDA 12.8.1, nvcc included).
+# (PyTorch 2.6.0, Python 3.12, CUDA 12.x, nvcc included).
 #
 # It is idempotent: re-running skips completed steps.
 set -euo pipefail
@@ -33,8 +33,8 @@ nvcc --version | tail -n 1
 PY_VER="$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
 echo "Python ${PY_VER}"
 case "${PY_VER}" in
-  3.10|3.11) : ;;
-  *) warn "Python ${PY_VER}: decord may lack a wheel and compile from source. 3.10/3.11 recommended." ;;
+  3.10|3.11|3.12) : ;;
+  *) warn "Python ${PY_VER} is untested; 3.10-3.12 expected." ;;
 esac
 
 python - <<'PY'
