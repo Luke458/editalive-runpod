@@ -6,7 +6,7 @@
 #     cd /workspace && bash runpod-setup.sh
 #
 # Designed for `runpod/pytorch:1.3.1-cu1281-torch260-ubuntu2204`
-# (PyTorch 2.6.0, Python 3.12, CUDA 12.x, nvcc included).
+# (PyTorch 2.6.0, Python 3.12, CUDA toolkit at /usr/local/cuda).
 #
 # It is idempotent: re-running skips completed steps.
 set -euo pipefail
@@ -25,10 +25,17 @@ log "Checking environment"
 command -v nvidia-smi >/dev/null || die "nvidia-smi not found — this must run on a GPU pod."
 nvidia-smi -L || die "No GPU detected by driver."
 
-if ! command -v nvcc >/dev/null; then
-  die "nvcc not found. Use a CUDA *devel* image, e.g. runpod/pytorch:1.3.1-cu1281-torch260-ubuntu2204"
+# nvcc is only needed to *compile* the kernels. The prebuilt image already
+# ships flash-attn + fastvideo-kernel, so a missing nvcc is fine there.
+if ! command -v nvcc >/dev/null && [[ -x /usr/local/cuda/bin/nvcc ]]; then
+  export PATH="/usr/local/cuda/bin:${PATH}"
+  export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda}"
 fi
-nvcc --version | tail -n 1
+if command -v nvcc >/dev/null; then
+  nvcc --version | tail -n 1
+else
+  warn "nvcc not found; required only if a kernel has to be compiled from source."
+fi
 
 PY_VER="$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
 echo "Python ${PY_VER}"
@@ -64,6 +71,8 @@ pip install ninja
 if python -c 'import flash_attn' 2>/dev/null; then
   log "flash-attn already installed"
 else
+  command -v nvcc >/dev/null \
+    || die "flash-attn is missing and must be compiled, but nvcc was not found. Use a CUDA *devel* image, e.g. runpod/pytorch:1.3.1-cu1281-torch260-ubuntu2204"
   log "Building flash-attn (this takes a while)"
   MAX_JOBS="${MAX_JOBS:-$(nproc)}" \
     pip install flash-attn==2.7.2.post1 --no-build-isolation
@@ -72,6 +81,8 @@ fi
 if python -c 'import fastvideo_kernel' 2>/dev/null; then
   log "fastvideo-kernel already installed"
 else
+  command -v nvcc >/dev/null \
+    || die "fastvideo-kernel is missing and must be compiled, but nvcc was not found. Use a CUDA *devel* image, e.g. runpod/pytorch:1.3.1-cu1281-torch260-ubuntu2204"
   log "Building fastvideo-kernel (this takes a while)"
   CMAKE_BUILD_PARALLEL_LEVEL="${CMAKE_BUILD_PARALLEL_LEVEL:-$(nproc)}" \
     bash tools/install_fastvideo_kernel.sh

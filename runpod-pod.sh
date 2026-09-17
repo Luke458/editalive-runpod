@@ -23,6 +23,14 @@
 set -euo pipefail
 
 API="https://rest.runpod.io/v1"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Load the API key from .env (gitignored) if it isn't already exported.
+# Accepts either RUNPOD_API_KEY or runpod_api as the variable name.
+if [[ -z "${RUNPOD_API_KEY:-}" && -f "${SCRIPT_DIR}/.env" ]]; then
+  RUNPOD_API_KEY="$(sed -n 's/^[[:space:]]*\(RUNPOD_API_KEY\|runpod_api\)[[:space:]]*=[[:space:]]*//p' "${SCRIPT_DIR}/.env" \
+    | head -1 | tr -d '\r' | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//")"
+fi
 
 IMAGE="${IMAGE:-runpod/pytorch:1.3.1-cu1281-torch260-ubuntu2204}"
 CLOUD_TYPE="${CLOUD_TYPE:-SECURE}"

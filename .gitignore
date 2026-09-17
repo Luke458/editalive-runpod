@@ -1,0 +1,8 @@
+# Secrets
+.env
+*.env
+
+# Script scratch/output
+.last_pod_id
+.last_template_id
+outputs/
