@@ -6,6 +6,7 @@
 #       Get one at https://www.runpod.io/console/user/settings
 #
 # Usage:
+#   ./runpod-pod.sh up [4090|l40s|h100|a100|5090]       # create + wait + init
 #   ./runpod-pod.sh create [4090|l40s|h100|a100|5090]   # from an image, or
 #   TEMPLATE_ID=<id> ./runpod-pod.sh create 4090         # from a saved template
 #   IMAGE=<registry/image:tag> ./runpod-pod.sh template  # register baked image
@@ -20,6 +21,7 @@
 #   IMAGE=runpod/pytorch:1.3.1-cu1281-torch260-ubuntu2204
 #   DISK_GB=150  VOLUME_GB=100  POD_NAME=editalive
 #   TEMPLATE_ID=<id>  TEMPLATE_NAME=editalive
+#   EDITALIVE_INIT=0   SSH_READY_TIMEOUT=900
 set -euo pipefail
 
 API="https://rest.runpod.io/v1"
@@ -42,6 +44,10 @@ TEMPLATE_NAME="${TEMPLATE_NAME:-editalive}"
 
 command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }
 command -v curl >/dev/null || { echo "curl is required" >&2; exit 1; }
+
+log()  { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
+warn() { printf '\033[1;33m[warn] %s\033[0m\n' "$*" >&2; }
+die()  { printf '\033[1;31m[error] %s\033[0m\n' "$*" >&2; exit 1; }
 
 api() {
   : "${RUNPOD_API_KEY:?Set RUNPOD_API_KEY in your environment first}"
@@ -187,6 +193,60 @@ cmd_create() {
   fi
 }
 
+# Create a pod, wait until SSH is reachable, then start editalive-init remotely.
+cmd_up() {
+  local gpu="${1:-4090}"
+  cmd_create "${gpu}"
+
+  local id
+  id="$(cat "${SCRIPT_DIR}/.last_pod_id" 2>/dev/null || true)"
+  [[ -n "${id}" ]] || die "Could not determine the new pod id."
+
+  local timeout="${SSH_READY_TIMEOUT:-900}" waited=0 ip="" port=""
+  log "Waiting for pod ${id} to expose SSH (up to ${timeout}s)"
+  while (( waited < timeout )); do
+    local json; json="$(api GET "/pods/${id}")"
+    ip="$(jq -r '.publicIp // empty' <<<"${json}")"
+    port="$(jq -r '.portMappings["22"] // empty' <<<"${json}")"
+    [[ -n "${ip}" && -n "${port}" ]] && break
+    sleep 15; waited=$((waited + 15))
+    printf '  ... %ss\n' "${waited}"
+  done
+
+  if [[ -z "${ip}" || -z "${port}" ]]; then
+    warn "SSH not ready after ${waited}s. Check the RunPod console, then:"
+    echo "  ./runpod-pod.sh ssh ${id}"
+    return 1
+  fi
+  log "SSH ready: ssh root@${ip} -p ${port}"
+
+  if [[ "${EDITALIVE_INIT:-1}" != "1" ]]; then
+    echo "EDITALIVE_INIT=0 — skipping remote init."
+    echo "  ./runpod-pod.sh ssh ${id}"
+    return 0
+  fi
+
+  local ssh_opts=(-n -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -p "${port}")
+  log "Starting remote init (weights download runs in the background)"
+  if [[ -n "${TEMPLATE_ID:-}" ]]; then
+    ssh "${ssh_opts[@]}" "root@${ip}" \
+      'nohup bash /usr/local/bin/editalive-init > /workspace/init.log 2>&1 & echo "init started (pid $!)"'
+  else
+    scp -o StrictHostKeyChecking=accept-new -P "${port}" \
+      "${SCRIPT_DIR}/runpod-setup.sh" "root@${ip}:/workspace/runpod-setup.sh"
+    ssh "${ssh_opts[@]}" "root@${ip}" \
+      'nohup bash /workspace/runpod-setup.sh > /workspace/init.log 2>&1 & echo "init started (pid $!)"'
+  fi
+
+  cat <<EOF
+
+Pod ${id} is initializing. Next:
+  ./runpod-pod.sh ssh ${id}                      # open the pod
+  tail -f /workspace/init.log                    # watch progress (~9 min)
+  cd /workspace/EditaLive && ./run-streaming.sh  # once init prints "Done."
+EOF
+}
+
 cmd_list() {
   api GET /pods | jq -r '
     (["ID","NAME","STATUS","GPU","$/HR"] | @tsv),
@@ -222,6 +282,7 @@ cmd_stop()      { api POST "/pods/$1/stop"      >/dev/null && echo "Stop request
 cmd_terminate() { api DELETE "/pods/$1"         >/dev/null && echo "Terminate requested for $1"; }
 
 case "${1:-}" in
+  up)        shift; cmd_up "$@" ;;
   create)    shift; cmd_create "$@" ;;
   template)  cmd_template ;;
   list)      cmd_list ;;
@@ -230,5 +291,5 @@ case "${1:-}" in
   ssh)       shift; cmd_ssh "$@" ;;
   stop)      shift; cmd_stop "$@" ;;
   terminate) shift; cmd_terminate "$@" ;;
-  *) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//' ;;
 esac
