@@ -8,9 +8,9 @@ so it cannot run on the AMD/ROCm machine this tooling was written on. Everything
 targets NVIDIA GPUs on RunPod.
 
 The main problem this repo solves: a fresh pod spends several minutes compiling
-`flash-attn` and `fastvideo-kernel` and then **downloads ~50 GB** of weights before it
-can run anything. This repo bakes the compiles into an image (so pods are ready in
-~1 min) and caches the weights on a network volume (so they download only once).
+`flash-attn` and `fastvideo-kernel` and then **downloads ~53 GB** of weights before it
+can run anything. This repo bakes the compiles into an image, so the only first-boot
+cost is the weight download (~9 min).
 
 ## Contents
 
@@ -30,9 +30,10 @@ can run anything. This repo bakes the compiles into an image (so pods are ready 
 - Pulling the image needs no credentials if the GHCR package is public; otherwise see
   [Package visibility](#package-visibility).
 
-> **Security:** never paste or commit your RunPod API key. The scripts read it from the
-> `RUNPOD_API_KEY` environment variable. Consider keeping it in `~/.config/runpod/env`
-> (`chmod 600`) and sourcing that file.
+> **Security:** never commit your RunPod API key. `runpod-pod.sh` reads it from
+> `RUNPOD_API_KEY`, or automatically from a gitignored `.env` in this directory
+> (accepting either `RUNPOD_API_KEY` or `runpod_api` as the variable name). Keep that
+> file `chmod 600`. The repo's `.gitignore` already excludes `.env` and `outputs/`.
 
 ## Quick start
 
@@ -49,24 +50,29 @@ IMAGE=ghcr.io/luke458/editalive-runpod:latest ./runpod-pod.sh template
 
 Or build your own image first (see [Building the image](#building-the-image)).
 
-### 2. Boot a pod from the template
+### 2. Boot a pod and initialize it
+
+One command creates the pod, waits for SSH, then starts the weight download in the
+background:
 
 ```bash
-TEMPLATE_ID=<id> ./runpod-pod.sh create 4090     # 4090 | l40s | h100 | a100 | 5090
-./runpod-pod.sh ssh <podId>                        # prints the ssh command
+TEMPLATE_ID=<id> ./runpod-pod.sh up 4090     # 4090 | l40s | h100 | h100-sxm | a100 | 5090
 ```
 
-Wait 1-2 minutes for the container, then over SSH:
+Then:
 
 ```bash
-editalive-init          # clone repo + fetch weights (first boot only, ~50 GB)
+./runpod-pod.sh ssh <podId>          # open the pod
+tail -f /workspace/init.log          # watch the ~53 GB download (~9 min)
 cd /workspace/EditaLive
-./run-streaming.sh      # render the included demo
-./run-webcam.sh         # real-time webcam mode
+./run-streaming.sh                   # render the included demo
+./run-webcam.sh                      # real-time webcam mode
 ```
 
-`editalive-init` is idempotent: on later pods with the same network volume it skips
-both the clone and the weight download.
+To do it manually instead: `./runpod-pod.sh create 4090`, wait for the SSH mapping,
+then run `editalive-init`. Set `EDITALIVE_INIT=0` on `up` to skip the automatic init.
+
+`editalive-init` is idempotent — it skips the clone and any weights already present.
 
 ### 3. Webcam / streaming mode
 
@@ -97,11 +103,19 @@ with sensible flags. Rough guidance for the 14B model:
 A 16 GB card is below the project's tested floor and will likely OOM.
 
 Indicative RunPod Secure Cloud rates (check current pricing): 4090 ~$0.74/hr,
-L40S ~$0.99/hr, A100 ~$1.39/hr, H100 ~$2.89/hr.
+L40S ~$0.99/hr, A100 ~$1.39/hr, H100 PCIe ~$2.89/hr, H100 SXM ~$3.49/hr. The image is
+built for arch `8.0;8.9;9.0`, which covers all of the above.
 
 ## Building the image
 
 Local build needs no GPU — `nvcc` comes from the base image inside the build container.
+A full build takes ~10-20 min (flash-attn installs from a prebuilt wheel when one
+matches; the CUTLASS kernel compiles from source); CI rebuilds reuse the registry cache
+(~8 min).
+
+Note: at runtime `nvcc` is not on `PATH` (it lives at `/usr/local/cuda/bin`). That is
+fine because the image already ships the compiled kernels; `runpod-setup.sh` only needs
+`nvcc` when it has to build one from scratch.
 
 ```bash
 export REGISTRY=ghcr.io/<your-user>     # or docker.io/<your-user>
@@ -120,7 +134,7 @@ Build variables (env):
 | `TORCH_CUDA_ARCH_LIST` | `8.0;8.9;9.0` | **Must cover the GPU you'll rent.** Add `8.6` for A10/A40. Each extra arch lengthens the build. |
 | `MAX_JOBS` | `nproc` | flash-attn compile parallelism; lower it if the build OOMs. |
 | `CMAKE_BUILD_PARALLEL_LEVEL` | `nproc` | fastvideo-kernel compile parallelism. |
-| `BAKE_WEIGHTS` | `0` | Set `1` to bake ~50 GB of weights into the image (not recommended). |
+| `BAKE_WEIGHTS` | `0` | Set `1` to bake ~53 GB of weights into the image (not recommended). |
 
 Then register the template:
 
@@ -170,14 +184,15 @@ cd /workspace && bash runpod-setup.sh
 
 | Command | Description |
 |---|---|
+| `up [gpu]` | `create` + wait for SSH + start `editalive-init`. `EDITALIVE_INIT=0` skips init; `SSH_READY_TIMEOUT=900` changes the wait. |
 | `create [4090\|5090\|l40s\|a6000\|h100\|h100-sxm\|a100]` | Create a pod. Raw RunPod GPU type IDs also work. |
 | `template` | Register `IMAGE` as a RunPod template. |
 | `list` | List pods with status and cost. |
 | `get <podId>` | Full pod JSON. |
 | `status <podId>` | One-line status. |
 | `ssh <podId>` | Print the `ssh root@IP -p PORT` command. |
-| `stop <podId>` | Stop (keeps the volume, stops billing for compute). |
-| `terminate <podId>` | Delete the pod. |
+| `stop <podId>` | Stop compute billing; the volume keeps billing at $0.20/GB/mo. |
+| `terminate <podId>` | Delete the pod and its volume (no further charges). |
 
 Environment overrides:
 
@@ -191,14 +206,27 @@ Environment overrides:
 | `DISK_GB` | `150` | Container disk (ephemeral; holds the image + build artifacts). |
 | `VOLUME_GB` | `100` | Persistent pod volume mounted at `/workspace` (weights live here). |
 | `POD_NAME` | `editalive` | |
+| `EDITALIVE_INIT` | `1` | `up` runs `editalive-init` unless set to `0`. |
+| `SSH_READY_TIMEOUT` | `900` | Seconds `up` waits for the SSH port mapping. |
 
 ## Storage and cost
 
-- **Weights live on the network/volume at `/workspace`** (`HF_HOME=/workspace/hf`,
-  repo at `/workspace/EditaLive`). They survive pod stop/restart, so keep the volume.
-- **Stop pods when idle** — billing is per second. `./runpod-pod.sh stop <podId>`.
-  `terminate` deletes the volume contents.
-- Container disk can be modest; the image is ~20 GB and the volume holds the weights.
+Weights live on the pod volume at `/workspace` (`HF_HOME=/workspace/hf`, repo at
+`/workspace/EditaLive`). Compute is billed per second while running.
+
+| Storage | Running | Stopped |
+|---|---|---|
+| Container disk (150 GB) | $0.10/GB/mo | not charged |
+| Volume disk (100 GB) | $0.10/GB/mo | **$0.20/GB/mo** |
+| Network volume | $0.07/GB/mo | $0.07/GB/mo |
+
+- **"Stop" is not free**: a stopped 100 GB pod volume costs ~$20/mo. For occasional use,
+  `terminate` between sessions and let the weights re-download (~9 min) — that is what
+  this tooling assumes.
+- If your balance reaches $0, a pod **without** a network volume is terminated and its
+  data is unrecoverable.
+- Using it often? Put the weights on a **network volume** (~$7/mo for 100 GB, portable
+  across pods) instead of paying the stopped-volume rate.
 
 ## Generated run scripts
 
